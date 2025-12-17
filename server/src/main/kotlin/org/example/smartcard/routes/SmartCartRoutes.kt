@@ -9,6 +9,7 @@ import org.example.project.model.ChangeStatusRequest
 import org.example.project.model.HistoryLogEntry
 import org.example.project.model.Product
 import org.example.project.model.RegisterRequest
+import org.example.project.model.SetDefaultPinRequest
 import org.example.project.model.TransactionRequest
 import org.example.project.model.UpdateInfoRequest
 import org.example.project.model.UserResponse
@@ -625,59 +626,75 @@ fun Route.smartCardRoutes() {
             }
             call.respond(positions)
         }
-        post("/admin/change_pin"){
-            val params = call.receive<Map<String, String>>()
+        // Trong smartCardRoutes.kt
+        post("/admin/change-pin") { // Đã đổi thành dấu gạch nối cho khớp Client
+            try {
+                val params = call.receive<Map<String, String>>()
+                val adminId = params["id"] ?: "ADMIN01"
+                val newPin = params["newPin"] ?: ""
 
-            // Server hiện đang dùng cố định ADMIN01.
-            // Nếu muốn dùng ID từ Client, ta cần thay đổi:
-            val adminIdFromRequest = params["id"] // ID Admin (ví dụ: ADMIN01)
-            val newPin = params["newPin"] ?: ""
-
-            if (adminIdFromRequest.isNullOrEmpty() || newPin.isEmpty()) {
-                call.respond(HttpStatusCode.BadRequest, "Missing Admin ID or new PIN")
-                return@post
-            }
-
-            // Giả định CryptoUtils.sha256 sử dụng thuật toán Hash phù hợp (ví dụ: Argon2)
-            // Dựa trên log: Server không dùng Argon2 mà dùng Hash khác. Ta giữ nguyên logic Hash cũ.
-            val newHash = CryptoUtils.sha256(newPin)
-
-            val updated = transaction {
-                // ✅ FIX/CẢI THIỆN: Dùng ID từ request để tìm Admin.
-                Employees.update({ (Employees.employeeId eq adminIdFromRequest) and (Employees.role eq "ADMIN") }) {
-                    it[pinHash] = newHash
-                    // Bạn có thể cân nhắc cập nhật thêm isDefaultPin = false ở đây
+                if (newPin.isBlank()) {
+                    call.respond(HttpStatusCode.BadRequest, "Mã PIN không được để trống")
+                    return@post
                 }
-            }
 
-            if (updated > 0) call.respond(HttpStatusCode.OK, "PIN changed")
-            else call.respond(HttpStatusCode.NotFound, "Admin not found or failed to update PIN")
+                // Tạo Hash từ PIN mới
+                val newHash = CryptoUtils.sha256(newPin)
+
+                val result = transaction {
+                    // Lấy thông tin Admin hiện tại trong DB
+                    val admin = Employees.select { (Employees.employeeId eq adminId) and (Employees.role eq "ADMIN") }
+                        .singleOrNull()
+
+                    if (admin == null) return@transaction "NOT_FOUND"
+
+                    // 🛡️ KIỂM TRA TRÙNG: So sánh Hash mới với Hash cũ trong DB
+                    if (admin[Employees.pinHash] == newHash) {
+                        return@transaction "IDENTICAL"
+                    }
+
+                    // Nếu không trùng -> Cập nhật Hash mới
+                    Employees.update({ Employees.employeeId eq adminId }) {
+                        it[pinHash] = newHash
+                    }
+                    "SUCCESS"
+                }
+
+                when (result) {
+                    "SUCCESS" -> call.respond(HttpStatusCode.OK, "Đổi PIN thành công")
+                    "IDENTICAL" -> call.respond(HttpStatusCode.Conflict, "Mã PIN mới không được trùng với mã PIN hiện tại")
+                    "NOT_FOUND" -> call.respond(HttpStatusCode.NotFound, "Không tìm thấy tài khoản Admin")
+                    else -> call.respond(HttpStatusCode.InternalServerError, "Lỗi hệ thống")
+                }
+            } catch (e: Exception) {
+                call.respond(HttpStatusCode.InternalServerError, e.message ?: "Error")
+            }
         }
         post("/admin/set-default-pin") {
             try {
-                val params = call.receive<Map<String, Any>>()
-                val cardUuid = params["cardUuid"]?.toString() ?: ""
-                val isDefault = params["isDefaultPin"] as? Boolean ?: true
+                val req = call.receive<SetDefaultPinRequest>()
 
-                if (cardUuid.isBlank()) {
+                if (req.cardUuid.isBlank()) {
                     call.respond(HttpStatusCode.BadRequest, "Missing cardUuid")
                     return@post
                 }
 
                 val updated = transaction {
-                    // Cập nhật flag isDefaultPin cho nhân viên dựa trên cardUuid
-                    Employees.update({ Employees.cardUuid eq cardUuid }) {
-                        it[isDefaultPin] = isDefault
+                    Employees.update({ Employees.cardUuid eq req.cardUuid }) {
+                        it[isDefaultPin] = req.isDefaultPin
                     }
                 }
 
                 if (updated > 0) {
-                    call.respond(HttpStatusCode.OK, "PIN status updated to Default: $isDefault")
+                    call.respond(HttpStatusCode.OK, "PIN status updated to Default: ${req.isDefaultPin}")
                 } else {
-                    call.respond(HttpStatusCode.NotFound, "User not found with cardUuid: $cardUuid")
+                    call.respond(HttpStatusCode.NotFound, "User not found with cardUuid: ${req.cardUuid}")
                 }
             } catch (e: Exception) {
-                call.respond(HttpStatusCode.InternalServerError, e.message ?: "Unknown Error")
+                call.respond(
+                    HttpStatusCode.InternalServerError,
+                    e.message ?: "Unknown Error"
+                )
             }
         }
     }
