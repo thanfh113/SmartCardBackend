@@ -344,7 +344,6 @@ fun Route.smartCardRoutes() {
         }
 
         // ... (GIỮ NGUYÊN CÁC API KHÁC: GET INFO, UPDATE, LOGIN...)
-        // (Bạn nhớ copy nốt các API: get/{uuid}, next-id, all-users, change-status, admin-login, upload-avatar, delete-user từ file cũ vào đây nhé)
 
         get("/{uuid}") {
             val uuid = call.parameters["uuid"] ?: ""
